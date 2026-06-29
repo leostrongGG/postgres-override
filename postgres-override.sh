@@ -421,14 +421,18 @@ main() {
     echo ""
     echo "OK: ${OVERRIDE_FILE} atualizado com sucesso."
 
-    read -r -p "Deseja reiniciar o servico postgres para aplicar? [s/N] " restart
+    read -r -p "Deseja reiniciar toda a stack Ticketz para aplicar? [s/N] " restart
     if [[ "$restart" =~ ^[Ss]$ ]]; then
-        echo "Reiniciando postgres..."
-        (cd "$TARGET_DIR" && docker compose restart postgres)
-        echo "OK: postgres reiniciado."
+        echo "Reiniciando toda a stack Ticketz..."
+        (
+            cd "$TARGET_DIR" || exit 1
+            sudo docker compose stop
+            sudo docker compose up -d
+        )
+        echo "OK: stack Ticketz reiniciada."
     else
         echo "Reinicie manualmente quando possivel:"
-        echo "  cd ${TARGET_DIR} && docker compose restart postgres"
+        echo "  cd ${TARGET_DIR} && sudo docker compose stop && sudo docker compose up -d"
     fi
 }
 

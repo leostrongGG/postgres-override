@@ -57,7 +57,7 @@ O script irá:
 2. Exibir os parâmetros calculados
 3. Previsualizar o conteúdo final do `docker-compose.override.yaml`
 4. Perguntar se deseja aplicar
-5. Perguntar se deseja reiniciar o PostgreSQL
+5. Perguntar se deseja reiniciar toda a stack Ticketz (usando `sudo docker compose`)
 
 ## ⚙️ Fórmulas de cálculo
 
