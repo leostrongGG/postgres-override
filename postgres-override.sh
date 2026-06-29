@@ -56,77 +56,37 @@ detect_cpus() {
     nproc
 }
 
-detect_disk_type() {
-    # retorna 'ssd' se detectar disco nao-rotacional (SSD/NVMe), 'hdd' caso contrario
+disk_info() {
+    # Exibe informacoes de diagnostico do disco raiz
     local root_dev
     root_dev=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/\[.*\]//')
     if [[ -z "$root_dev" ]]; then
-        echo "ssd"
         return
     fi
 
-    # Resolve LVM/loop/virtio para o disco fisico pai
-    local base_dev="$root_dev"
-    base_dev="${base_dev%[0-9]*}"      # remove numero da particao
-    base_dev="${base_dev%p}"           # remove 'p' final de nvme
-
+    local base_dev
+    base_dev="${root_dev%[0-9]*}"
+    base_dev="${base_dev%p}"
     local base_name
     base_name=$(basename "$base_dev" 2>/dev/null || echo "")
 
-    # Se for LVM (mapper) ou dm-X, procura o disco fisico pai via lsblk
-    if [[ "$root_dev" == /dev/mapper/* ]] || [[ "$base_name" == dm-* ]]; then
-        local pkname
-        pkname=$(lsblk -n -o PKNAME "$root_dev" 2>/dev/null | head -n1 | tr -d ' ')
-        if [[ -n "$pkname" ]]; then
-            base_name="$pkname"
-        fi
-    fi
+    echo "  - Dispositivo: ${root_dev}"
+    echo "  - Modelo: $(lsblk -d -no MODEL "$base_dev" 2>/dev/null | tr -d '[:space:]' || echo 'desconhecido')"
 
-    # 1. NVMe e sempre SSD
-    if [[ "$base_name" == nvme* ]]; then
-        echo "ssd"
-        return
+    local rota
+    rota=$(cat "/sys/block/${base_name}/queue/rotational" 2>/dev/null | tr -d ' ')
+    if [[ -z "$rota" ]]; then
+        rota=$(lsblk -d -no ROTA "$base_dev" 2>/dev/null | tr -d ' ')
     fi
+    echo "  - Rotational (ROTA): ${rota:-desconhecido}"
 
-    # 2. Verifica /sys/block/<dev>/queue/rotational
-    local sys_path="/sys/block/${base_name}/queue/rotational"
-    if [[ -f "$sys_path" ]]; then
-        local rota
-        rota=$(cat "$sys_path" 2>/dev/null | tr -d ' ')
-        if [[ "$rota" == "0" ]]; then
-            echo "ssd"
-            return
-        elif [[ "$rota" == "1" ]]; then
-            echo "hdd"
-            return
-        fi
+    if command -v hdparm &>/dev/null; then
+        local speed
+        speed=$(sudo hdparm -t "$base_dev" 2>/dev/null | awk -F '=' '/Timing buffered disk reads/ {print $2}' | tr -d ' ')
+        echo "  - Velocidade buffered read: ${speed:-nao disponivel}"
+    else
+        echo "  - Velocidade buffered read: hdparm nao instalado"
     fi
-
-    # 3. Tenta lsblk -d -no ROTA
-    local rota_lsblk
-    rota_lsblk=$(lsblk -d -no ROTA "/dev/${base_name}" 2>/dev/null | tr -d ' ')
-    if [[ "$rota_lsblk" == "0" ]]; then
-        echo "ssd"
-        return
-    elif [[ "$rota_lsblk" == "1" ]]; then
-        echo "hdd"
-        return
-    fi
-
-    # 4. Verifica modelo do disco por palavras-chave de SSD
-    local model
-    model=$(lsblk -d -no MODEL "/dev/${base_name}" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-    if [[ -z "$model" ]]; then
-        model=$(cat "/sys/block/${base_name}/device/model" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-    fi
-    if [[ "$model" =~ (ssd|nvme|solid|flash|intel|samsung|kingston|wd|sandisk|micron|crucial|seagate.*firecuda) ]]; then
-        echo "ssd"
-        return
-    fi
-
-    # 5. Se nao conseguiu determinar, assume SSD para ambiente de nuvem/VPS
-    # (a maioria das VPS modernas usa SSD/NVMe, mesmo que virtualizado reporte ROTA=1)
-    echo "ssd"
 }
 
 detect_disk_size() {
@@ -141,7 +101,7 @@ MIN_RAM_MB=$(( 8 * 1024 ))
 
 calculate_params() {
     local ram_bytes="$1"
-    local disk_type="$2"
+    local force_disk_type="$2"
 
     local ram_mb
     ram_mb=$(bytes_to_mb "$ram_bytes")
@@ -181,12 +141,13 @@ calculate_params() {
     shared_mb=$(round_mb "$shared_mb")
     cache_mb=$(round_mb "$cache_mb")
 
-    # Parametros de I/O
-    local rpc="4.0"
-    local eio="2"
-    if [[ "$disk_type" == "ssd" ]]; then
-        rpc="1.1"
-        eio="200"
+    # Parametros de I/O: padrao SSD/NVMe (ambiente VPS moderno)
+    local disk_type="${force_disk_type:-ssd}"
+    local rpc="1.1"
+    local eio="200"
+    if [[ "$disk_type" == "hdd" ]]; then
+        rpc="4.0"
+        eio="2"
     fi
 
     cat <<EOF
@@ -338,7 +299,46 @@ PYEOF
 # Main
 # -----------------------------------------------------------------------------
 
+usage() {
+    cat <<EOF
+Uso: $(basename "$0") [OPCOES]
+
+Opcoes:
+  --ssd     Forca parametros de SSD/NVMe (padrao)
+  --hdd     Forca parametros de HDD
+  -h, --help    Mostra esta ajuda
+
+Nota: A deteccao automatica de HDD/SSD em ambientes virtualizados nao e
+confiavel. O padrao assume SSD/NVMe, que e o padrao atual da maioria das VPS.
+Use --hdd apenas se tiver certeza absoluta de que o disco e HDD.
+EOF
+}
+
 main() {
+    local force_disk_type=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --ssd)
+                force_disk_type="ssd"
+                shift
+                ;;
+            --hdd)
+                force_disk_type="hdd"
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                echo "Opcao desconhecida: $1"
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
     echo "==================================================================="
     echo "  PostgreSQL Override Generator para Ticketz"
     echo "==================================================================="
@@ -358,10 +358,9 @@ main() {
     fi
 
     # Detecta recursos
-    local ram_bytes cpus disk_type disk_bytes
+    local ram_bytes cpus disk_bytes
     ram_bytes=$(detect_ram)
     cpus=$(detect_cpus)
-    disk_type=$(detect_disk_type)
     disk_bytes=$(detect_disk_size)
 
     local ram_gb disk_gb
@@ -371,13 +370,14 @@ main() {
     echo "Recursos detectados:"
     echo "  - RAM: ${ram_gb} GB"
     echo "  - vCPUs: ${cpus}"
-    echo "  - Disco raiz: ${disk_gb} GB (${disk_type})"
+    echo "  - Disco raiz: ${disk_gb} GB"
+    disk_info
     echo ""
 
     # Calcula parametros
     local params_file
     params_file=$(mktemp)
-    if ! calculate_params "$ram_bytes" "$disk_type" > "$params_file"; then
+    if ! calculate_params "$ram_bytes" "$force_disk_type" > "$params_file"; then
         rm -f "$params_file"
         exit 1
     fi

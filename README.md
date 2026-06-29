@@ -52,13 +52,20 @@ cd ~/postgres-override
 ./postgres-override.sh
 ```
 
+Para forçar parâmetros de HDD (apenas se tiver certeza):
+
+```bash
+./postgres-override.sh --hdd
+```
+
 O script irá:
 
 1. Mostrar os recursos detectados da VPS
-2. Exibir os parâmetros calculados
-3. Previsualizar o conteúdo final do `docker-compose.override.yaml`
-4. Perguntar se deseja aplicar
-5. Perguntar se deseja reiniciar toda a stack Ticketz (usando `sudo docker compose`)
+2. Exibir informações de diagnóstico do disco
+3. Exibir os parâmetros calculados
+4. Previsualizar o conteúdo final do `docker-compose.override.yaml`
+5. Perguntar se deseja aplicar
+6. Perguntar se deseja reiniciar toda a stack Ticketz (usando `sudo docker compose`)
 
 ## ⚙️ Fórmulas de cálculo
 
@@ -72,11 +79,28 @@ O script irá:
 | 24 GB | 6 GB | 18 GB | 32 MB | 512 MB |
 | 32 GB+ | 8 GB | 24 GB | 32 MB | 1 GB |
 
-| Parâmetro | Valor | Observação |
-|---|---|---|
-| `random_page_cost` | `1.1` (SSD) / `4.0` (HDD) | Custo de leitura aleatória de disco |
-| `effective_io_concurrency` | `200` (SSD) / `2` (HDD) | Paralelismo de I/O estimado |
-| `shm_size` | `256mb` | Valor seguro para PostgreSQL 16 com Docker |
+| Parâmetro | Valor padrão | `--hdd` | Observação |
+|---|---|---|---|
+| `random_page_cost` | `1.1` | `4.0` | Ambientes virtualizados são tratados como SSD/NVMe por padrão |
+| `effective_io_concurrency` | `200` | `2` | — |
+| `shm_size` | `256mb` | `256mb` | Valor seguro para PostgreSQL 16 com Docker |
+
+## 💽 Detecção de disco
+
+A detecção automática de HDD/SSD em VPS não é confiável. Hypervisores como QEMU/KVM frequentemente reportam discos NVMe como `ROTA=1` (rotacional). Por isso, o script **assume SSD/NVMe por padrão**.
+
+Use `--hdd` apenas se tiver certeza absoluta de que o disco é HDD mecânico.
+
+### Verificar manualmente (opcional)
+
+```bash
+sudo apt install hdparm -y
+sudo hdparm -Tt /dev/sda
+```
+
+- Abaixo de ~200 MB/s: provável HDD
+- 200–800 MB/s: SSD virtualizado limitado
+- Acima de ~1000 MB/s: SSD/NVMe
 
 ## 📝 Exemplo de saída
 
