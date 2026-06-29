@@ -34,6 +34,7 @@ Este script detecta os recursos da VPS (RAM, tipo de disco) e gera/atualiza o ar
 - Linux com Docker e Docker Compose
 - Python 3 instalado
 - Instalação Ticketz via `ticketz-docker-acme` em `~/ticketz-docker-acme`
+- **Mínimo de 8 GB de RAM** (VPS menores não precisam deste tuning)
 
 ### Setup
 
@@ -61,15 +62,21 @@ O script irá:
 
 ## ⚙️ Fórmulas de cálculo
 
-| Parâmetro | Fórmula | Observação |
+> ⚠️ **Requisito mínimo**: 8 GB de RAM. VPS com menos memória não devem usar este script.
+
+| RAM total | `shared_buffers` | `effective_cache_size` | `work_mem` | `maintenance_work_mem` |
+|---|---:|---:|---:|---:|
+| 8 GB | 2 GB | 6 GB | 32 MB | 256 MB |
+| 12 GB | 3 GB | 9 GB | 32 MB | 256 MB |
+| 16 GB | 4 GB | 12 GB | 32 MB | 512 MB |
+| 24 GB | 6 GB | 18 GB | 32 MB | 512 MB |
+| 32 GB+ | 8 GB | 24 GB | 32 MB | 1 GB |
+
+| Parâmetro | Valor | Observação |
 |---|---|---|
-| `shared_buffers` | `25% da RAM` | Limitado a `4GB` para cargas OLTP do Ticketz |
-| `effective_cache_size` | `75% da RAM` | Estimativa de cache disponível no SO |
-| `work_mem` | `25% da RAM / 100` | Limitado entre `16MB` e `64MB` |
-| `maintenance_work_mem` | `~3% da RAM` | Limitado a `512MB` para evitar pressão no `/dev/shm` |
-| `random_page_cost` | `1.1` (SSD) / `4.0` (HDD) | — |
-| `effective_io_concurrency` | `200` (SSD) / `2` (HDD) | — |
-| `shm_size` | fixo em `256mb` | Valor seguro para PostgreSQL 16 com Docker |
+| `random_page_cost` | `1.1` (SSD) / `4.0` (HDD) | Custo de leitura aleatória de disco |
+| `effective_io_concurrency` | `200` (SSD) / `2` (HDD) | Paralelismo de I/O estimado |
+| `shm_size` | `256mb` | Valor seguro para PostgreSQL 16 com Docker |
 
 ## 📝 Exemplo de saída
 

@@ -38,8 +38,8 @@ format_mb() {
 
 round_mb() {
     local mb="$1"
-    # arredonda para multiplo de 64 MB
-    echo "$(( (mb + 32) / 64 * 64 ))"
+    # arredonda para o proximo multiplo de 64 MB (nunca zero)
+    echo "$(( (mb + 63) / 64 * 64 ))"
 }
 
 # -----------------------------------------------------------------------------
@@ -89,6 +89,8 @@ detect_disk_size() {
 # Calculo dos parametros PostgreSQL
 # -----------------------------------------------------------------------------
 
+MIN_RAM_MB=$(( 8 * 1024 ))
+
 calculate_params() {
     local ram_bytes="$1"
     local disk_type="$2"
@@ -96,36 +98,40 @@ calculate_params() {
     local ram_mb
     ram_mb=$(bytes_to_mb "$ram_bytes")
 
-    # shared_buffers = 25% da RAM (limite pratico de 4GB para Ticketz OLTP)
-    local shared_mb=$(( ram_mb / 4 ))
-    if [[ "$shared_mb" -gt 4096 ]]; then
-        shared_mb=4096
+    if [[ "$ram_mb" -lt "$MIN_RAM_MB" ]]; then
+        echo "ERRO: Este script foi projetado para VPS com no minimo 8 GB de RAM." >&2
+        echo "       RAM detectada: $(format_mb "$ram_mb")." >&2
+        echo "       Instalacoes Ticketz com menos de 8 GB nao precisam deste tuning." >&2
+        return 1
     fi
-    shared_mb=$(round_mb "$shared_mb")
 
-    # effective_cache_size = 75% da RAM
-    local cache_mb=$(( ram_mb * 3 / 4 ))
-    cache_mb=$(round_mb "$cache_mb")
+    # Valores baseados em proporcao e experiencia pratica com Ticketz
+    local shared_mb cache_mb work_mb maint_mb
 
-    # work_mem = 25% da RAM / max_connections (padrao 100)
-    # limitado entre 16MB e 64MB para evitar excesso
-    local work_mb=$(( ram_mb / 4 / 100 ))
-    if [[ "$work_mb" -lt 16 ]]; then
-        work_mb=16
-    elif [[ "$work_mb" -gt 64 ]]; then
-        work_mb=64
-    fi
-    work_mb=$(round_mb "$work_mb")
+    shared_mb=$(( ram_mb / 4 ))
+    cache_mb=$(( ram_mb * 3 / 4 ))
+    work_mb=32
 
-    # maintenance_work_mem = ~3% da RAM, limitado a 512MB por seguranca
-    # (evita estourar /dev/shm quando shm_size=256mb em operacoes de manutencao)
-    local maint_mb=$(( ram_mb * 3 / 100 ))
-    if [[ "$maint_mb" -gt 512 ]]; then
+    # maintenance_work_mem conforme faixa de RAM
+    if [[ "$ram_mb" -ge 32768 ]]; then
+        maint_mb=1024
+    elif [[ "$ram_mb" -ge 16384 ]]; then
         maint_mb=512
-    elif [[ "$maint_mb" -lt 128 ]]; then
-        maint_mb=128
+    else
+        maint_mb=256
     fi
-    maint_mb=$(round_mb "$maint_mb")
+
+    # Limites praticos para Ticketz (OLTP)
+    if [[ "$shared_mb" -gt 8192 ]]; then
+        shared_mb=8192
+    fi
+    if [[ "$cache_mb" -gt 24576 ]]; then
+        cache_mb=24576
+    fi
+
+    # Arredonda para multiplo de 64 MB
+    shared_mb=$(round_mb "$shared_mb")
+    cache_mb=$(round_mb "$cache_mb")
 
     # Parametros de I/O
     local rpc="4.0"
@@ -362,7 +368,10 @@ main() {
     # Calcula parametros
     local params_file
     params_file=$(mktemp)
-    calculate_params "$ram_bytes" "$disk_type" > "$params_file"
+    if ! calculate_params "$ram_bytes" "$disk_type" > "$params_file"; then
+        rm -f "$params_file"
+        exit 1
+    fi
 
     local SHARED_BUFFERS EFFECTIVE_CACHE_SIZE WORK_MEM MAINTENANCE_WORK_MEM RANDOM_PAGE_COST EFFECTIVE_IO_CONCURRENCY
     # shellcheck source=/dev/null
