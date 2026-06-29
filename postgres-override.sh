@@ -57,28 +57,76 @@ detect_cpus() {
 }
 
 detect_disk_type() {
-    # retorna 'ssd' se detectar ROTA=0 em disco raiz, 'hdd' caso contrario
+    # retorna 'ssd' se detectar disco nao-rotacional (SSD/NVMe), 'hdd' caso contrario
     local root_dev
     root_dev=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/\[.*\]//')
     if [[ -z "$root_dev" ]]; then
         echo "ssd"
         return
     fi
-    # remove particao
-    local disk="$root_dev"
-    disk="${disk%[0-9]*}"
-    disk="${disk%p}"
-    if [[ -z "$disk" ]]; then
+
+    # Resolve LVM/loop/virtio para o disco fisico pai
+    local base_dev="$root_dev"
+    base_dev="${base_dev%[0-9]*}"      # remove numero da particao
+    base_dev="${base_dev%p}"           # remove 'p' final de nvme
+
+    local base_name
+    base_name=$(basename "$base_dev" 2>/dev/null || echo "")
+
+    # Se for LVM (mapper) ou dm-X, procura o disco fisico pai via lsblk
+    if [[ "$root_dev" == /dev/mapper/* ]] || [[ "$base_name" == dm-* ]]; then
+        local pkname
+        pkname=$(lsblk -n -o PKNAME "$root_dev" 2>/dev/null | head -n1 | tr -d ' ')
+        if [[ -n "$pkname" ]]; then
+            base_name="$pkname"
+        fi
+    fi
+
+    # 1. NVMe e sempre SSD
+    if [[ "$base_name" == nvme* ]]; then
         echo "ssd"
         return
     fi
-    local rota
-    rota=$(lsblk -d -no ROTA "$disk" 2>/dev/null | tr -d ' ')
-    if [[ "$rota" == "0" ]]; then
-        echo "ssd"
-    else
-        echo "hdd"
+
+    # 2. Verifica /sys/block/<dev>/queue/rotational
+    local sys_path="/sys/block/${base_name}/queue/rotational"
+    if [[ -f "$sys_path" ]]; then
+        local rota
+        rota=$(cat "$sys_path" 2>/dev/null | tr -d ' ')
+        if [[ "$rota" == "0" ]]; then
+            echo "ssd"
+            return
+        elif [[ "$rota" == "1" ]]; then
+            echo "hdd"
+            return
+        fi
     fi
+
+    # 3. Tenta lsblk -d -no ROTA
+    local rota_lsblk
+    rota_lsblk=$(lsblk -d -no ROTA "/dev/${base_name}" 2>/dev/null | tr -d ' ')
+    if [[ "$rota_lsblk" == "0" ]]; then
+        echo "ssd"
+        return
+    elif [[ "$rota_lsblk" == "1" ]]; then
+        echo "hdd"
+        return
+    fi
+
+    # 4. Verifica modelo do disco por palavras-chave de SSD
+    local model
+    model=$(lsblk -d -no MODEL "/dev/${base_name}" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    if [[ -z "$model" ]]; then
+        model=$(cat "/sys/block/${base_name}/device/model" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    fi
+    if [[ "$model" =~ (ssd|nvme|solid|flash|intel|samsung|kingston|wd|sandisk|micron|crucial|seagate.*firecuda) ]]; then
+        echo "ssd"
+        return
+    fi
+
+    # 5. Se nao conseguiu determinar, assume SSD para ambiente de nuvem/VPS
+    # (a maioria das VPS modernas usa SSD/NVMe, mesmo que virtualizado reporte ROTA=1)
+    echo "ssd"
 }
 
 detect_disk_size() {
@@ -198,7 +246,7 @@ output_path = sys.argv[3]
 
 postgres_block = postgres_yaml.rstrip() + "\n"
 
-def fallback_merge(content):
+def merge_yaml(content):
     lines = content.splitlines()
     out = []
     i = 0
@@ -226,7 +274,6 @@ def fallback_merge(content):
         if inside_postgres:
             # pula ate encontrar proximo servico ou fim do bloco services
             if line == '':
-                out.append(line)
                 i += 1
                 continue
             if indent <= postgres_indent:
@@ -279,49 +326,11 @@ def fallback_merge(content):
 
     return "\n".join(out) + "\n"
 
-try:
-    import yaml
-    HAS_YAML = True
-except ImportError:
-    HAS_YAML = False
-
 with open(existing_path, 'r') as f:
     original = f.read()
 
-if HAS_YAML:
-    try:
-        data = yaml.safe_load(original) or {}
-        if not isinstance(data, dict):
-            data = {}
-        if 'services' not in data or data['services'] is None:
-            data['services'] = {}
-
-        # Preserva chaves customizadas de postgres, mas sobrescreve shm_size/command
-        existing_postgres = data.get('services', {}).get('postgres', {}) or {}
-        new_postgres = {k: v for k, v in existing_postgres.items() if k not in ('shm_size', 'command')}
-
-        # Reconstroi command como lista de strings para manter formato legivel
-        new_postgres['shm_size'] = '256mb'
-        new_postgres['command'] = (
-            "postgres\n"
-            "-c shared_buffers={SHARED_BUFFERS}\n"
-            "-c effective_cache_size={EFFECTIVE_CACHE_SIZE}\n"
-            "-c work_mem={WORK_MEM}\n"
-            "-c maintenance_work_mem={MAINTENANCE_WORK_MEM}\n"
-            "-c random_page_cost={RANDOM_PAGE_COST}\n"
-            "-c effective_io_concurrency={EFFECTIVE_IO_CONCURRENCY}"
-        )
-        data['services']['postgres'] = new_postgres
-
-        with open(output_path, 'w') as f:
-            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-    except yaml.YAMLError as e:
-        print(f"AVISO: YAML invalido ({e}). Usando merge manual.", file=sys.stderr)
-        with open(output_path, 'w') as f:
-            f.write(fallback_merge(original))
-else:
-    with open(output_path, 'w') as f:
-        f.write(fallback_merge(original))
+with open(output_path, 'w') as f:
+    f.write(merge_yaml(original))
 PYEOF
 }
 
